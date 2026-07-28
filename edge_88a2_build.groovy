@@ -47,16 +47,16 @@ pipeline {
                     #!/bin/bash
                     set -e
                     TS=$(date +%Y%m%d_%H%M%S)
-                    DEST=/dailybuild/edge_wevb_emmc/${TS}
+                    DEST=/dev_dailybuild/edge_wevb_emmc/${TS}
                     mkdir -p "$DEST"
                     cp -rv sophgo-sdk/install/soc_edge_wevb_emmc/. "$DEST"/
-                    echo "产物已拷贝到宿主机: /media/cvitek/share/open/github/dailybuild/edge_wevb_emmc/${TS}"
+                    echo "产物已拷贝到宿主机: /media/cvitek/share/open/github/dev_dailybuild/edge_wevb_emmc/${TS}"
                 '''
             }
         }
     }
     post {
-        success { echo '✅ 编译成功，产物在 dailybuild/edge_wevb_emmc/ 下以时间戳命名的目录中' }
+        success { echo '✅ 编译成功，产物在 dev_dailybuild/edge_wevb_emmc/ 下以时间戳命名的目录中' }
         failure { echo '❌ 编译失败，点 Console Output 查看日志' }
     }
 }
