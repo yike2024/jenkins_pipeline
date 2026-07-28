@@ -1,0 +1,34 @@
+pipeline {
+    agent any
+    options {
+        timestamps()
+    }
+    stages {
+        stage('拉取测试代码') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/yike2024/你的测试脚本仓库.git'
+            }
+        }
+        stage('在测试容器中运行自动化测试') {
+            steps {
+                sh '''
+                    #!/bin/bash
+                    set -e
+                    # 在宿主 Docker 上拉起测试容器，跑完自动删除
+                    # 注意：这里的 -v 路径是宿主机路径
+                    docker run --rm \
+                        -v /media/cvitek/share/open/github/dailybuild:/dailybuild:ro \
+                        -v "$WORKSPACE":/tests \
+                        -w /tests \
+                        edge-test-env:latest \
+                        python3 -m pytest -v
+                '''
+            }
+        }
+    }
+    post {
+        always { echo '测试结束，结果见 Console Output' }
+    }
+}
+
