@@ -1,43 +1,64 @@
 pipeline {
     agent any
     options {
-        timestamps()               // 日志带时间戳
-        disableConcurrentBuilds()  // 同一任务禁止并发，避免 workspace 冲突
+        timestamps()
+        disableConcurrentBuilds()
     }
     stages {
-        stage('repo 拉取代码') {
+        stage('repo 拉取 SDK 代码') {
             steps {
-                sh '''
-                    #!/bin/bash
-                    set -e
-                    if [ ! -d .repo ]; then
-                        repo init -u https://github.com/sophgo/manifest.git -m release/all_repos.xml
-                    fi
-                    repo sync -j8
-                '''
+                dir('sophgo-sdk') {
+                    sh '''
+                        #!/bin/bash
+                        set -e
+                        if [ ! -d .repo ]; then
+                            repo init -u https://github.com/sophgo/manifest.git -m release/all_repos.xml
+                        else
+                            # 已有本地仓库：先丢弃所有本地改动，避免 sync 冲突
+                            repo forall -j8 -c 'git reset --hard HEAD; git clean -fdx' || true
+                        fi
+                    '''
+                    // 网络抖动导致失败时自动重试 3 次
+                    retry(3) {
+                        sh '''
+                            #!/bin/bash
+                            set -e
+                            cd sophgo-sdk
+                            repo sync -j8 --force-sync
+                        '''
+                    }
+                }
             }
         }
         stage('编译 edge_wevb_emmc') {
             steps {
+                dir('sophgo-sdk') {
+                    sh '''
+                        #!/bin/bash
+                        set -e
+                        source build/envsetup_soc.sh
+                        defconfig edge_wevb_emmc
+                        clean_edge_all && build_edge_all
+                    '''
+                }
+            }
+        }
+        stage('拷贝产物到 dailybuild') {
+            steps {
                 sh '''
                     #!/bin/bash
                     set -e
-                    source build/envsetup_soc.sh
-                    defconfig edge_wevb_emmc
-                    clean_edge_all && build_edge_all
+                    TS=$(date +%Y%m%d_%H%M%S)
+                    DEST=/dailybuild/edge_wevb_emmc/${TS}
+                    mkdir -p "$DEST"
+                    cp -rv sophgo-sdk/install/soc_edge_wevb_emmc/. "$DEST"/
+                    echo "产物已拷贝到宿主机: /media/cvitek/share/open/github/dailybuild/edge_wevb_emmc/${TS}"
                 '''
-            }
-        }
-        stage('归档固件') {
-            steps {
-                // 编译产物归档到 Jenkins，网页上可直接下载
-                archiveArtifacts artifacts: 'install/soc_edge_wevb_emmc/**/*.img, install/soc_edge_wevb_emmc/**/*.zip',
-                                 allowEmptyArchive: true
             }
         }
     }
     post {
-        success { echo '✅ 编译成功，产物见本页 Artifacts' }
+        success { echo '✅ 编译成功，产物在 dailybuild/edge_wevb_emmc/ 下以时间戳命名的目录中' }
         failure { echo '❌ 编译失败，点 Console Output 查看日志' }
     }
 }
