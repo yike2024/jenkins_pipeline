@@ -4,6 +4,9 @@ pipeline {
         timestamps()
         disableConcurrentBuilds()
     }
+    triggers {
+        cron('H 2 * * *')        // 每天凌晨 2 点左右构建
+    }
     stages {
         stage('repo 拉取 SDK 代码') {
             steps {
