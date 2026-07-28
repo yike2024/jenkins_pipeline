@@ -14,7 +14,6 @@ pipeline {
                             repo init -u https://github.com/sophgo/manifest.git -m development/all_repos.xml
                             # 已有本地仓库：先丢弃所有本地改动，避免 sync 冲突
                             repo forall -j8 -c 'git reset --hard HEAD; git clean -fdx' || true
-                        fi
                     '''
                     // 网络抖动导致失败时自动重试 3 次
                     retry(3) {
