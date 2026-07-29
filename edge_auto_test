@@ -16,6 +16,7 @@ pipeline {
                 sh '''
                     python3 -m pytest tests/ -v \
                         --junitxml=results.xml \
+                        --html=report.html --self-contained-html \
                         --tb=short
                 '''
             }
@@ -23,7 +24,15 @@ pipeline {
     }
     post {
         always {
-            junit 'results.xml'   // 不管成功失败都收集报告
+            junit 'results.xml'
+            publishHTML(target: [
+                reportDir: '.',
+                reportFiles: 'report.html',
+                reportName: '串口测试报告',
+                keepAll: true,
+                alwaysLinkToLastBuild: true,
+                allowMissing: false
+            ])
         }
     }
 }
