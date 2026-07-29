@@ -21,9 +21,11 @@ def run_cmd(ser, cmd, expect, timeout=10):
     deadline = time.time() + timeout
     while time.time() < deadline:
         buf += ser.read(ser.in_waiting or 1)
-        if expect.encode() in ANSI_RE.sub('', buf.decode(errors='replace')):
-            return True, clean(buf.decode(errors='replace'))
-    return False, clean(buf.decode(errors='replace'))
+        text = ANSI_RE.sub('', buf.decode(errors='replace'))
+        if expect in text:
+            return True, text
+    return False, ANSI_RE.sub('', buf.decode(errors='replace'))
+
 
 def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
