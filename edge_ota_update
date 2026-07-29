@@ -1,8 +1,9 @@
 pipeline {
     agent any
     parameters {
-        string(name: 'BOARD_IP', defaultValue: '', description: '目标板子网络 IP，例如 10.80.40.44')
-        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包 sdcard.tgz 的绝对路径')
+        string(name: 'BOARD_IP', defaultValue: '', description: '目标板子 IP，可留空：留空则通过串口 hostname -I 自动获取')
+        string(name: 'FILE_SERVER_IP', defaultValue: '', description: '刷机包所在机器 IP（板子从这台机器 scp 拉取）')
+        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包在文件服务器上的绝对路径，例如 /media/cvitek/share/open/github/dailybuild/ubuntu/xxx/sdcard.tgz')
     }
     environment {
         BOARD_USER = 'linaro'
@@ -14,42 +15,70 @@ pipeline {
         timeout(time: 120, unit: 'MINUTES')
     }
     stages {
-        stage('参数检查') {
+        stage('拉取脚本') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('参数检查与获取板子 IP') {
             steps {
                 script {
-                    if (!params.BOARD_IP?.trim()) {
-                        error('请填写 BOARD_IP')
+                    if (!params.FILE_SERVER_IP?.trim()) {
+                        error('请填写 FILE_SERVER_IP（刷机包所在机器）')
                     }
                     if (!params.SDCARD_TGZ?.trim()) {
-                        error('请填写 SDCARD_TGZ')
+                        error('请填写 SDCARD_TGZ（文件服务器上的绝对路径）')
                     }
+                    def ip = params.BOARD_IP?.trim()
+                    if (ip) {
+                        echo "使用手动填写的 BOARD_IP=${ip}"
+                    } else {
+                        echo "BOARD_IP 为空，通过串口自动获取..."
+                        ip = sh(
+                            script: 'python3 tests/get_board_ip.py',
+                            returnStdout: true
+                        ).trim()
+                        if (!ip) {
+                            error('串口未能获取到板子 IP')
+                        }
+                        echo "串口获取到 BOARD_IP=${ip}"
+                    }
+                    env.BOARD_IP = ip
                 }
                 sh '''
                     #!/bin/bash
                     set -e
-                    test -f "${SDCARD_TGZ}" || { echo "本地刷机包不存在: ${SDCARD_TGZ}"; exit 1; }
                     command -v sshpass >/dev/null
                     command -v ssh >/dev/null
-                    command -v scp >/dev/null
-                    echo "BOARD_IP=${BOARD_IP}"
-                    echo "SDCARD_TGZ=${SDCARD_TGZ}"
-                    ls -lh "${SDCARD_TGZ}"
+                    echo "BOARD_IP=${BOARD_IP}            # 目标板子"
+                    echo "FILE_SERVER_IP=${FILE_SERVER_IP}  # 刷机包所在机器"
+                    echo "SDCARD_TGZ=${SDCARD_TGZ}      # 源路径"
+                    echo "流程: Jenkins -> SSH 板子 -> 板子 scp ${FILE_SERVER_IP}:${SDCARD_TGZ} -> /data/sdcard.tgz"
                 '''
             }
         }
-        stage('拷贝刷机包到板子') {
+        stage('板子 scp 拉取刷机包') {
             steps {
                 sh '''
                     #!/bin/bash
                     set -e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
-                    echo "拷贝 ${SDCARD_TGZ} -> ${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
-                    sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
-                        "${SDCARD_TGZ}" \
-                        "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
-                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
-                        "${BOARD_USER}@${BOARD_IP}" \
-                        "ls -lh /data/sdcard.tgz"
+                    echo "在板子 ${BOARD_IP} 上执行 scp 拉取..."
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" bash -s <<EOF
+set -e
+mkdir -p /data
+echo "源: ${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}"
+echo "目标: /data/sdcard.tgz"
+if command -v sshpass >/dev/null 2>&1; then
+    sshpass -p "${BOARD_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        "${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
+else
+    echo "板子未安装 sshpass，尝试免密 scp..."
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
+        "${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
+fi
+ls -lh /data/sdcard.tgz
+EOF
                 '''
             }
         }
@@ -126,7 +155,7 @@ EOF
         }
     }
     post {
-        success { echo "OTA 升级流程完成: ${params.BOARD_IP}" }
+        success { echo "OTA 升级流程完成: ${env.BOARD_IP}" }
         failure { echo "OTA 升级失败，请查看 Console Output" }
     }
 }
