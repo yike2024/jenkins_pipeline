@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import subprocess
 import xml.etree.ElementTree as ET
 import pytest
@@ -9,6 +10,7 @@ REMOTE_TEST_DIR = REMOTE_JPEG_DIR
 REMOTE_XML = '/tmp/jpeg_results.xml'
 LOCAL_XML = os.path.join(os.path.dirname(__file__), '..', 'remote_jpeg_results.xml')
 BOARD_USER = os.environ.get('BOARD_USER', 'linaro')
+BOARD_SSH_PASS = os.environ.get('BOARD_SSH_PASS', 'linaro')
 
 PYTEST_TIMEOUT = 1800
 SCP_TIMEOUT = 60
@@ -18,22 +20,82 @@ END_MARKER = 'XML_END_MARK'
 DONE_MARK = 'REMOTE_JPEG_DONE'
 
 
-def _ssh_base(ip):
+def _ssh_opts():
     return [
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-o', 'ConnectTimeout=10',
-        '-o', 'BatchMode=yes',
     ]
 
 
-def run_remote_pytest(board):
+def _wrap_ssh(cmd_list):
+    if BOARD_SSH_PASS:
+        return ['sshpass', '-p', BOARD_SSH_PASS] + cmd_list
+    return cmd_list + ['-o', 'BatchMode=yes']
+
+
+def run_remote_pytest_ssh(ip):
+    remote_cmd = (
+        f'cd {REMOTE_TEST_DIR} && '
+        f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML}'
+    )
+    cmd = _wrap_ssh(['ssh'] + _ssh_opts() + [f'{BOARD_USER}@{ip}', remote_cmd])
+    print(f'\n$ ssh {BOARD_USER}@{ip} {remote_cmd}', flush=True)
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as e:
+        return False, str(e)
+
+    lines = []
+    deadline = time.time() + PYTEST_TIMEOUT
+    try:
+        assert proc.stdout is not None
+        while True:
+            if time.time() > deadline:
+                proc.kill()
+                lines.append('\nssh pytest timeout\n')
+                break
+            line = proc.stdout.readline()
+            if line == '' and proc.poll() is not None:
+                break
+            if line:
+                print(line, end='', flush=True)
+                lines.append(line)
+            else:
+                time.sleep(0.05)
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+        raise
+
+    out = ''.join(lines)
+    if any(x in out for x in (
+        'Permission denied',
+        'Connection refused',
+        'No route to host',
+        'Connection timed out',
+        'Could not resolve hostname',
+    )):
+        return False, out
+    if 'sshpass' in out and 'not found' in out:
+        return False, out
+    return True, out
+
+
+def run_remote_pytest_serial(board):
     run_cmd(board, 'stty -echo', PROMPT, timeout=5, quiet=0.2)
     try:
         ok, out = run_cmd(
             board,
             f'cd {REMOTE_TEST_DIR} && '
-            f'python3 -m pytest . -v --tb=short --junitxml={REMOTE_XML} ; '
+            f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML} ; '
             f'echo {DONE_MARK}',
             DONE_MARK,
             timeout=PYTEST_TIMEOUT,
@@ -47,11 +109,11 @@ def run_remote_pytest(board):
 
 def fetch_xml_via_scp(ip):
     local_path = os.path.abspath(LOCAL_XML)
-    cmd = ['scp'] + _ssh_base(ip) + [
+    cmd = _wrap_ssh(['scp'] + _ssh_opts() + [
         f'{BOARD_USER}@{ip}:{REMOTE_XML}',
         local_path,
-    ]
-    print(f'\n$ {" ".join(cmd)}', flush=True)
+    ])
+    print(f'\n$ scp {BOARD_USER}@{ip}:{REMOTE_XML} {local_path}', flush=True)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCP_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -113,9 +175,16 @@ def test_run_remote_jpeg(board, board_ip):
     print(f'\n使用板子 IP: {board_ip}', flush=True)
     print(f'远端测试目录: {REMOTE_TEST_DIR}', flush=True)
 
-    ok, out = run_remote_pytest(board)
-    assert ok, f'远端 pytest 执行超时（{PYTEST_TIMEOUT}s）'
-    assert 'No module named pytest' not in out, f'远端缺少 pytest，请确认 test_prepare_athena2_env 已通过\n{out}'
+    print('\n[网络] 通过 SSH 执行远端 pytest（实时输出）...', flush=True)
+    started, out = run_remote_pytest_ssh(board_ip)
+    if not started:
+        print(f'\n[网络] SSH 不可用，回退串口执行:\n{out[:500]}', flush=True)
+        ok, out = run_remote_pytest_serial(board)
+        assert ok, f'串口执行远端 pytest 失败/超时\n{out}'
+
+    assert 'No module named pytest' not in out, (
+        f'远端缺少 pytest，请确认 test_prepare_athena2_env 已通过\n{out}'
+    )
 
     xml_text, err = fetch_xml_via_scp(board_ip)
     if not xml_text:

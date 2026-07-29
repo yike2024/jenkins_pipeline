@@ -9,16 +9,28 @@ from serial import SerialException
 PORT = '/dev/ttyUSB0'
 BAUD = 115200
 PROMPT = 'linaro@sophon'
+PROMPT_RE = re.compile(r'l?inaro@sophon')
 BOARD_IP_FILE = os.path.join(os.path.dirname(__file__), '..', 'board_ip.txt')
 REMOTE_TEST_ROOT = '/data/athena2_daily_test'
 REMOTE_JPEG_DIR = f'{REMOTE_TEST_ROOT}/multimedia/jpeg'
 
-ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
+ANSI_RE = re.compile(
+    r'\x1b\[[0-?]*[ -/]*[@-~]'
+    r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+    r'|\x1b[@-Z\\-_]'
+)
 IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 
 def clean(text):
-    return ANSI_RE.sub('', text)
+    text = ANSI_RE.sub('', text)
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*$', '', text)
+    text = text.replace('\r', '')
+    return text
+
+
+def has_prompt(text):
+    return bool(PROMPT_RE.search(text))
 
 
 def parse_board_ip(text):
@@ -90,7 +102,7 @@ def _serial_in_waiting(ser):
 
 
 def fetch_board_ip(ser):
-    ok, out = run_cmd(ser, 'hostname -I', PROMPT, timeout=5)
+    ok, out = run_cmd(ser, 'hostname -I', PROMPT, timeout=10)
     if not ok:
         return None, out
     return parse_board_ip(out), out
@@ -101,6 +113,16 @@ def _stream_delta(text, printed):
         print(text[printed:], end='', flush=True)
         return len(text)
     return printed
+
+
+def _expect_matched(text, expect, own_line):
+    if not expect:
+        return False
+    if expect == PROMPT or expect == 'linaro@sophon':
+        return has_prompt(text)
+    if own_line:
+        return bool(re.search(r'(?m)^' + re.escape(expect) + r'\s*$', text))
+    return expect in text
 
 
 def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5, stream=True, own_line=False):
@@ -115,20 +137,13 @@ def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5, stream=True, own_line=False
     printed = 0
     deadline = time.time() + timeout
 
-    def _matched(text):
-        if not expect:
-            return False
-        if own_line:
-            return bool(re.search(r'(?m)^' + re.escape(expect) + r'\s*$', text))
-        return expect in text
-
     while time.time() < deadline:
         n = _serial_in_waiting(ser)
         buf += _serial_read(ser, n or 1)
         text = clean(buf.decode(errors='replace'))
         if stream:
             printed = _stream_delta(text, printed)
-        if _matched(text):
+        if _expect_matched(text, expect, own_line):
             end = time.time() + quiet
             while time.time() < end:
                 n = _serial_in_waiting(ser)
@@ -152,13 +167,52 @@ def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5, stream=True, own_line=False
     return False, text
 
 
+def wait_for_shell(ser, timeout=30):
+    print('\n[串口] 尝试唤醒 shell...', flush=True)
+    try:
+        ser.reset_input_buffer()
+    except SerialException:
+        pass
+
+    ser.write(b'\x03')
+    time.sleep(0.3)
+    ser.write(b'\n')
+    time.sleep(0.3)
+
+    buf = b''
+    printed = 0
+    deadline = time.time() + timeout
+    last_nudge = 0
+    while time.time() < deadline:
+        n = _serial_in_waiting(ser)
+        chunk = _serial_read(ser, n or 1)
+        if chunk:
+            buf += chunk
+        text = clean(buf.decode(errors='replace'))
+        printed = _stream_delta(text, printed)
+        if has_prompt(text):
+            print(flush=True)
+            run_cmd(ser, 'stty echo', PROMPT, timeout=5, quiet=0.2)
+            return True, text
+
+        now = time.time()
+        if now - last_nudge > 2:
+            ser.write(b'\n')
+            last_nudge = now
+        time.sleep(0.05)
+
+    text = clean(buf.decode(errors='replace'))
+    print(flush=True)
+    return False, text
+
+
 @pytest.fixture(scope='session')
 def board():
     try:
         ser = open_serial()
     except SerialException as e:
         pytest.fail(str(e))
-    ok, out = run_cmd(ser, '', PROMPT, timeout=10)
+    ok, out = wait_for_shell(ser, timeout=30)
     if not ok:
         ser.close()
         pytest.fail(
@@ -167,6 +221,8 @@ def board():
         )
     yield ser
     try:
+        ser.write(b'\x03\nstty echo\n')
+        time.sleep(0.2)
         ser.close()
     except Exception:
         pass
