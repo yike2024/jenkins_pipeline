@@ -43,6 +43,13 @@ def main():
         print('FAIL: 没有读到系统信息')
         sys.exit(1)          # 退出码非 0 → Jenkins 判定构建失败
 
+    # 测试 2：bm_version 版本信息
+    ok, out = run_cmd(ser, 'bm_version', 'SophonSDK', timeout=5)
+    print(out)
+    if not ok:
+        print('FAIL: bm_version 未返回版本信息')
+        sys.exit(1)
+
     print('PASS: 串口通信正常')
     ser.close()
 
