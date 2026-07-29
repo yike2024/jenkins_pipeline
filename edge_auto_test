@@ -8,17 +8,23 @@ pipeline {
     stages {
         stage('拉取测试脚本') {
             steps {
-                checkout scm    // 把仓库完整内容（含 tests/ 目录）检出到 workspace
+                checkout scm
             }
         }
         stage('串口自动化测试') {
             steps {
-                sh 'python3 tests/serial_demo.py'   // 路径相对于 workspace 根目录
+                sh '''
+                    python3 -m pytest tests/ -v \
+                        --junitxml=results.xml \
+                        --tb=short
+                '''
             }
         }
     }
     post {
-        always { echo '测试结束，详细输出见上方日志' }
+        always {
+            junit 'results.xml'   // 不管成功失败都收集报告
+        }
     }
 }
 

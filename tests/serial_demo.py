@@ -4,6 +4,8 @@ import serial
 import time
 import sys
 import re
+import pytest
+from conftest import run_cmd
 
 PORT = '/dev/ttyUSB0'
 BAUD = 115200
@@ -26,25 +28,12 @@ TESTS = [
 def clean(text):
     return ANSI_RE.sub('', text)
 
-def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5):
-    ser.reset_input_buffer()
-    ser.write((cmd + '\n').encode())
-    buf = b''
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        buf += ser.read(ser.in_waiting or 1)
-        text = clean(buf.decode(errors='replace'))
-        if expect in text:
-            end = time.time() + quiet
-            while time.time() < end:
-                n = ser.in_waiting
-                if n:
-                    buf += ser.read(n)
-                    end = time.time() + quiet
-                else:
-                    time.sleep(0.05)
-            return True, clean(buf.decode(errors='replace'))
-    return False, clean(buf.decode(errors='replace'))
+@pytest.mark.parametrize('name,cmd,expect,timeout', TESTS,
+                         ids=[t[0] for t in TESTS])
+def test_board_cmd(board, name, cmd, expect, timeout):
+    ok, out = run_cmd(board, cmd, expect, timeout=timeout)
+    print(f'\n$ {cmd}\n{out}')          # 输出会附在失败报告里
+    assert ok, f'[{name}] 未等到期望输出: {expect}'
 
 def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
