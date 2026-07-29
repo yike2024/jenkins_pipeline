@@ -34,11 +34,16 @@ def _wrap_ssh(cmd_list):
     return cmd_list + ['-o', 'BatchMode=yes']
 
 
-def run_remote_pytest_ssh(ip):
-    remote_cmd = (
+def _remote_pytest_cmd():
+    return (
         f'cd {REMOTE_TEST_DIR} && '
+        f'PYTHONPATH=/data:/data/athena2_daily_test:$PYTHONPATH '
         f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML}'
     )
+
+
+def run_remote_pytest_ssh(ip):
+    remote_cmd = _remote_pytest_cmd()
     cmd = _wrap_ssh(['ssh'] + _ssh_opts() + [f'{BOARD_USER}@{ip}', remote_cmd])
     print(f'\n$ ssh {BOARD_USER}@{ip} {remote_cmd}', flush=True)
 
@@ -94,9 +99,7 @@ def run_remote_pytest_serial(board):
     try:
         ok, out = run_cmd(
             board,
-            f'cd {REMOTE_TEST_DIR} && '
-            f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML} ; '
-            f'echo {DONE_MARK}',
+            f'{_remote_pytest_cmd()} ; echo {DONE_MARK}',
             DONE_MARK,
             timeout=PYTEST_TIMEOUT,
             quiet=2,
@@ -116,6 +119,8 @@ def fetch_xml_via_scp(ip):
     print(f'\n$ scp {BOARD_USER}@{ip}:{REMOTE_XML} {local_path}', flush=True)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCP_TIMEOUT)
+    except FileNotFoundError as e:
+        return None, str(e)
     except subprocess.TimeoutExpired:
         return None, 'scp timeout'
     if r.returncode != 0:
