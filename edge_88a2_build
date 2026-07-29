@@ -38,6 +38,9 @@ pipeline {
 			TSC=$(date +%Y%m%d_%H%M%S)
                         source build/envsetup_soc.sh
                         defconfig edge_wevb_emmc
+			export MINI_BUILD=1
+			export CFLAGS="-Wno-error=stringop-overflow"
+    			export CXXFLAGS="-Wno-error=stringop-overflow"
 			repo manifest -r > manifest_${TSC}.xml
                         clean_edge_all && build_edge_all
                     '''
