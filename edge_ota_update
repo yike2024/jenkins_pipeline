@@ -8,6 +8,8 @@ pipeline {
     environment {
         BOARD_USER = 'linaro'
         BOARD_PASS = 'linaro'
+        FILE_USER = 'cvitek'
+        FILE_PASS = 'cvitek123456'
     }
     options {
         timestamps()
@@ -63,20 +65,20 @@ pipeline {
                     #!/bin/bash
                     set -e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
-                    echo "在板子 ${BOARD_IP} 上执行 scp 拉取..."
+                    echo "在板子 ${BOARD_IP} 上准备 sshpass 并 scp 拉取..."
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" bash -s <<EOF
 set -e
 mkdir -p /data
-echo "源: ${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}"
-echo "目标: /data/sdcard.tgz"
-if command -v sshpass >/dev/null 2>&1; then
-    sshpass -p "${BOARD_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
-else
-    echo "板子未安装 sshpass，尝试免密 scp..."
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
-        "${BOARD_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
+if ! command -v sshpass >/dev/null 2>&1; then
+    echo "板子缺少 sshpass，尝试安装..."
+    echo "${BOARD_PASS}" | sudo -S -p '' apt-get update -qq
+    echo "${BOARD_PASS}" | sudo -S -p '' apt-get install -y -qq sshpass
 fi
+command -v sshpass >/dev/null
+echo "源: ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}"
+echo "目标: /data/sdcard.tgz"
+sshpass -p "${FILE_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    "${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
 ls -lh /data/sdcard.tgz
 EOF
                 '''
