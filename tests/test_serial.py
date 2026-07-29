@@ -1,5 +1,5 @@
 import pytest
-from conftest import run_cmd
+from conftest import run_cmd, REMOTE_TEST_ROOT
 
 TESTS = [
     ('系统信息', 'cat /etc/os-release', 'PRETTY_NAME', 5),
@@ -17,3 +17,36 @@ def test_board_cmd(board, name, cmd, expect, timeout):
 def test_board_ip(board_ip):
     assert board_ip, '板子 IP 为空'
     print(f'BOARD_IP={board_ip}', flush=True)
+
+
+def test_prepare_athena2_env(board):
+    ok, out = run_cmd(
+        board,
+        f'test -d {REMOTE_TEST_ROOT} && ls {REMOTE_TEST_ROOT}/requirements.txt && echo CHECK_DIR_OK',
+        'CHECK_DIR_OK',
+        timeout=10,
+        quiet=0.5,
+        own_line=True,
+    )
+    assert ok, f'板子上缺少测试目录或 requirements.txt: {REMOTE_TEST_ROOT}\n{out}'
+
+    ok, out = run_cmd(
+        board,
+        f'cd {REMOTE_TEST_ROOT} && python3 -m pip install -r requirements.txt ; echo PIP_INSTALL_DONE',
+        'PIP_INSTALL_DONE',
+        timeout=600,
+        quiet=1,
+        own_line=True,
+    )
+    assert ok, f'pip install -r requirements.txt 超时或失败\n{out}'
+
+    ok, out = run_cmd(
+        board,
+        'python3 -c "import pytest; print(pytest.__version__)" ; echo CHECK_PYTEST_OK',
+        'CHECK_PYTEST_OK',
+        timeout=20,
+        quiet=0.5,
+        own_line=True,
+    )
+    assert ok and 'No module named pytest' not in out, f'安装后仍无法 import pytest\n{out}'
+    print('\nathena2 环境准备完成', flush=True)

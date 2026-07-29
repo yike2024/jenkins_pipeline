@@ -1,59 +1,97 @@
-"""
-通过串口在板子上执行 /data/jpeg 目录下的 pytest 测试，
-将远端 JUnit XML 报告拉回本地保存为 remote_jpeg_results.xml，
-供 Jenkins junit 插件一并展示每条远端用例的红绿状态。
-
-本文件自身只包含一个"调度"用例 test_run_remote_jpeg，
-负责触发远端执行 + 回传报告。若远端有失败用例，此用例也会标记失败。
-"""
 import os
 import re
+import subprocess
 import xml.etree.ElementTree as ET
 import pytest
-from conftest import run_cmd
+from conftest import run_cmd, PROMPT, REMOTE_JPEG_DIR
 
-REMOTE_TEST_DIR = '/data/jpeg'
+REMOTE_TEST_DIR = REMOTE_JPEG_DIR
 REMOTE_XML = '/tmp/jpeg_results.xml'
 LOCAL_XML = os.path.join(os.path.dirname(__file__), '..', 'remote_jpeg_results.xml')
+BOARD_USER = os.environ.get('BOARD_USER', 'linaro')
 
 PYTEST_TIMEOUT = 1800
-CAT_TIMEOUT = 60
+SCP_TIMEOUT = 60
 
-BEGIN_MARKER = '===XMLBEGIN==='
-END_MARKER = '===XMLEND==='
+BEGIN_MARKER = 'XML_BEGIN_MARK'
+END_MARKER = 'XML_END_MARK'
+DONE_MARK = 'REMOTE_JPEG_DONE'
+
+
+def _ssh_base(ip):
+    return [
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'ConnectTimeout=10',
+        '-o', 'BatchMode=yes',
+    ]
 
 
 def run_remote_pytest(board):
-    ok, out = run_cmd(
-        board,
-        f'cd {REMOTE_TEST_DIR} && '
-        f'python3 -m pytest . -v --tb=short --junitxml={REMOTE_XML} ; '
-        f'echo REMOTE_PYTEST_DONE',
-        'REMOTE_PYTEST_DONE',
-        timeout=PYTEST_TIMEOUT,
-        quiet=2,
-    )
+    run_cmd(board, 'stty -echo', PROMPT, timeout=5, quiet=0.2)
+    try:
+        ok, out = run_cmd(
+            board,
+            f'cd {REMOTE_TEST_DIR} && '
+            f'python3 -m pytest . -v --tb=short --junitxml={REMOTE_XML} ; '
+            f'echo {DONE_MARK}',
+            DONE_MARK,
+            timeout=PYTEST_TIMEOUT,
+            quiet=2,
+            own_line=True,
+        )
+    finally:
+        run_cmd(board, 'stty echo', PROMPT, timeout=5, quiet=0.2)
     return ok, out
 
 
+def fetch_xml_via_scp(ip):
+    local_path = os.path.abspath(LOCAL_XML)
+    cmd = ['scp'] + _ssh_base(ip) + [
+        f'{BOARD_USER}@{ip}:{REMOTE_XML}',
+        local_path,
+    ]
+    print(f'\n$ {" ".join(cmd)}', flush=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, 'scp timeout'
+    if r.returncode != 0:
+        return None, (r.stderr or r.stdout or 'scp failed')
+    with open(local_path, 'r', encoding='utf-8', errors='replace') as f:
+        return f.read().strip(), ''
+
+
+def _extract_between_markers(text):
+    begins = [m.end() for m in re.finditer(re.escape(BEGIN_MARKER), text)]
+    if not begins:
+        return None
+    for start in reversed(begins):
+        end = text.find(END_MARKER, start)
+        if end == -1:
+            continue
+        content = text[start:end].strip()
+        if content.startswith('<?xml') or content.startswith('<'):
+            return content
+    return None
+
+
 def fetch_xml_via_serial(board):
-    ok, out = run_cmd(
-        board,
-        f'echo {BEGIN_MARKER} && cat {REMOTE_XML} && echo {END_MARKER}',
-        END_MARKER,
-        timeout=CAT_TIMEOUT,
-        quiet=1,
-    )
+    run_cmd(board, 'stty -echo', PROMPT, timeout=5, quiet=0.2)
+    try:
+        ok, out = run_cmd(
+            board,
+            f'printf "%s\\n" {BEGIN_MARKER}; cat {REMOTE_XML}; printf "\\n%s\\n" {END_MARKER}',
+            END_MARKER,
+            timeout=60,
+            quiet=1,
+            own_line=True,
+        )
+    finally:
+        run_cmd(board, 'stty echo', PROMPT, timeout=5, quiet=0.2)
     if not ok:
         return None
-    m = re.search(
-        re.escape(BEGIN_MARKER) + r'\s*(.*?)\s*' + re.escape(END_MARKER),
-        out,
-        re.DOTALL,
-    )
-    if not m:
-        return None
-    return m.group(1).strip()
+    return _extract_between_markers(out)
 
 
 def count_results(xml_text):
@@ -71,12 +109,21 @@ def count_results(xml_text):
     return total, passed, failures, errors, skipped
 
 
-def test_run_remote_jpeg(board):
+def test_run_remote_jpeg(board, board_ip):
+    print(f'\n使用板子 IP: {board_ip}', flush=True)
+    print(f'远端测试目录: {REMOTE_TEST_DIR}', flush=True)
+
     ok, out = run_remote_pytest(board)
     assert ok, f'远端 pytest 执行超时（{PYTEST_TIMEOUT}s）'
+    assert 'No module named pytest' not in out, f'远端缺少 pytest，请确认 test_prepare_athena2_env 已通过\n{out}'
 
-    xml_text = fetch_xml_via_serial(board)
-    assert xml_text, f'无法通过串口获取远端报告 {REMOTE_XML}'
+    xml_text, err = fetch_xml_via_scp(board_ip)
+    if not xml_text:
+        print(f'\nscp 拉取失败，回退串口传输: {err}', flush=True)
+        xml_text = fetch_xml_via_serial(board)
+
+    assert xml_text, f'无法获取远端测试报告 {REMOTE_XML}'
+    assert xml_text.lstrip().startswith('<'), f'报告内容不是合法 XML:\n{xml_text[:200]}'
 
     local_path = os.path.abspath(LOCAL_XML)
     with open(local_path, 'w', encoding='utf-8') as f:
