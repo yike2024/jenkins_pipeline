@@ -32,6 +32,19 @@ def test_prepare_athena2_env(board):
 
     ok, out = run_cmd(
         board,
+        'test -d /data/utils && ls /data/utils/file_op.py && echo CHECK_UTILS_OK',
+        'CHECK_UTILS_OK',
+        timeout=10,
+        quiet=0.5,
+        own_line=True,
+    )
+    assert ok, (
+        '板子上缺少 /data/utils。请把仓库 pytest/utils 目录拷到 /data/utils '
+        f'(与 athena2_daily_test 同级)\n{out}'
+    )
+
+    ok, out = run_cmd(
+        board,
         f'cd {REMOTE_TEST_ROOT} && python3 -m pip install -r requirements.txt ; echo PIP_INSTALL_DONE',
         'PIP_INSTALL_DONE',
         timeout=600,
@@ -42,11 +55,11 @@ def test_prepare_athena2_env(board):
 
     ok, out = run_cmd(
         board,
-        'python3 -c "import pytest; print(pytest.__version__)" ; echo CHECK_PYTEST_OK',
+        'PYTHONPATH=/data:$PYTHONPATH python3 -c "from utils.file_op import change_dir; import pytest; print(pytest.__version__)" ; echo CHECK_PYTEST_OK',
         'CHECK_PYTEST_OK',
         timeout=20,
         quiet=0.5,
         own_line=True,
     )
-    assert ok and 'No module named pytest' not in out, f'安装后仍无法 import pytest\n{out}'
+    assert ok and 'No module named' not in out, f'安装后仍无法 import pytest/utils\n{out}'
     print('\nathena2 环境准备完成', flush=True)

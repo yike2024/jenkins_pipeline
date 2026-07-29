@@ -35,11 +35,13 @@ def _wrap_ssh(cmd_list):
 
 
 def _remote_pytest_cmd():
-    return (
+    inner = (
         f'cd {REMOTE_TEST_DIR} && '
-        f'PYTHONPATH=/data:/data/athena2_daily_test:$PYTHONPATH '
+        f'export PYTHONPATH=/data:/data/athena2_daily_test:$PYTHONPATH && '
         f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML}'
     )
+    escaped = inner.replace("'", "'\"'\"'")
+    return f"bash -lc '{escaped}'"
 
 
 def run_remote_pytest_ssh(ip):
@@ -190,13 +192,23 @@ def test_run_remote_jpeg(board, board_ip):
     assert 'No module named pytest' not in out, (
         f'远端缺少 pytest，请确认 test_prepare_athena2_env 已通过\n{out}'
     )
+    assert 'No module named \'utils\'' not in out and 'No module named "utils"' not in out, (
+        '远端缺少 utils 模块。请把仓库 pytest/utils 拷到板子 /data/utils '
+        f'(与 athena2_daily_test 同级)\n{out}'
+    )
+    assert 'ImportError while loading conftest' not in out, (
+        f'远端 conftest 加载失败，pytest 未真正跑起来，因此没有生成 {REMOTE_XML}\n{out}'
+    )
 
     xml_text, err = fetch_xml_via_scp(board_ip)
     if not xml_text:
         print(f'\nscp 拉取失败，回退串口传输: {err}', flush=True)
         xml_text = fetch_xml_via_serial(board)
 
-    assert xml_text, f'无法获取远端测试报告 {REMOTE_XML}'
+    assert xml_text, (
+        f'无法获取远端测试报告 {REMOTE_XML}。'
+        f'通常是远端 pytest 未成功执行，或 scp/串口回传失败。scp错误: {err}'
+    )
     assert xml_text.lstrip().startswith('<'), f'报告内容不是合法 XML:\n{xml_text[:200]}'
 
     local_path = os.path.abspath(LOCAL_XML)
