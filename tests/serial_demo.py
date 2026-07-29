@@ -14,7 +14,8 @@ def clean(text):
     """去掉终端控制码，日志更干净"""
     return ANSI_RE.sub('', text)
 
-def run_cmd(ser, cmd, expect, timeout=10):
+def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5):
+    """发命令，等到 expect 出现后再静默 quiet 秒收齐剩余输出"""
     ser.reset_input_buffer()
     ser.write((cmd + '\n').encode())
     buf = b''
@@ -23,7 +24,16 @@ def run_cmd(ser, cmd, expect, timeout=10):
         buf += ser.read(ser.in_waiting or 1)
         text = ANSI_RE.sub('', buf.decode(errors='replace'))
         if expect in text:
-            return True, text
+            # 匹配成功：继续读，直到 quiet 秒内没有新数据（输出收尾）
+            end = time.time() + quiet
+            while time.time() < end:
+                n = ser.in_waiting
+                if n:
+                    buf += ser.read(n)
+                    end = time.time() + quiet   # 还有数据就顺延
+                else:
+                    time.sleep(0.05)
+            return True, ANSI_RE.sub('', buf.decode(errors='replace'))
     return False, ANSI_RE.sub('', buf.decode(errors='replace'))
 
 
