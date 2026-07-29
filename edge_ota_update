@@ -1,0 +1,132 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'BOARD_IP', defaultValue: '', description: '目标板子网络 IP，例如 10.80.40.44')
+        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包 sdcard.tgz 的绝对路径')
+    }
+    environment {
+        BOARD_USER = 'linaro'
+        BOARD_PASS = 'linaro'
+    }
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 120, unit: 'MINUTES')
+    }
+    stages {
+        stage('参数检查') {
+            steps {
+                script {
+                    if (!params.BOARD_IP?.trim()) {
+                        error('请填写 BOARD_IP')
+                    }
+                    if (!params.SDCARD_TGZ?.trim()) {
+                        error('请填写 SDCARD_TGZ')
+                    }
+                }
+                sh '''
+                    #!/bin/bash
+                    set -e
+                    test -f "${SDCARD_TGZ}" || { echo "本地刷机包不存在: ${SDCARD_TGZ}"; exit 1; }
+                    command -v sshpass >/dev/null
+                    command -v ssh >/dev/null
+                    command -v scp >/dev/null
+                    echo "BOARD_IP=${BOARD_IP}"
+                    echo "SDCARD_TGZ=${SDCARD_TGZ}"
+                    ls -lh "${SDCARD_TGZ}"
+                '''
+            }
+        }
+        stage('拷贝刷机包到板子') {
+            steps {
+                sh '''
+                    #!/bin/bash
+                    set -e
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+                    echo "拷贝 ${SDCARD_TGZ} -> ${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
+                    sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
+                        "${SDCARD_TGZ}" \
+                        "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
+                        "${BOARD_USER}@${BOARD_IP}" \
+                        "ls -lh /data/sdcard.tgz"
+                '''
+            }
+        }
+        stage('解压并整理 OTA 目录') {
+            steps {
+                sh '''
+                    #!/bin/bash
+                    set -e
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" bash -s <<'EOF'
+set -e
+mkdir -p /data/ota
+rm -rf /data/ota/*
+echo "解压 /data/sdcard.tgz -> /data/ota"
+tar -xzf /data/sdcard.tgz -C /data/ota
+if [ -d /data/ota/sdcard ]; then
+    echo "检测到 /data/ota/sdcard，移动其中文件到 /data/ota"
+    shopt -s dotglob
+    mv /data/ota/sdcard/* /data/ota/
+    shopt -u dotglob
+    rmdir /data/ota/sdcard 2>/dev/null || rm -rf /data/ota/sdcard
+fi
+test -f /data/ota/local_update.sh || { echo "缺少 /data/ota/local_update.sh"; ls -la /data/ota; exit 1; }
+test -f /data/ota/md5.txt || { echo "缺少 /data/ota/md5.txt"; ls -la /data/ota; exit 1; }
+chmod +x /data/ota/local_update.sh
+echo "OTA 目录内容:"
+ls -la /data/ota
+EOF
+                '''
+            }
+        }
+        stage('执行 OTA 升级') {
+            steps {
+                sh '''
+                    #!/bin/bash
+                    set +e
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10"
+                    echo "执行: sudo /data/ota/local_update.sh /data/ota/md5.txt"
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
+                        "echo '${BOARD_PASS}' | sudo -S -p '' /data/ota/local_update.sh /data/ota/md5.txt"
+                    RC=$?
+                    echo "local_update.sh 退出码: ${RC}"
+                    if [ "${RC}" -ne 0 ] && [ "${RC}" -ne 255 ]; then
+                        echo "OTA 脚本执行失败"
+                        exit "${RC}"
+                    fi
+                    exit 0
+                '''
+            }
+        }
+        stage('等待板子恢复') {
+            steps {
+                sh '''
+                    #!/bin/bash
+                    set +e
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
+                    echo "等待板子 ${BOARD_IP} 重新上线..."
+                    for i in $(seq 1 60); do
+                        if sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
+                            "${BOARD_USER}@${BOARD_IP}" "echo OTA_BOARD_ALIVE" 2>/dev/null | grep -q OTA_BOARD_ALIVE; then
+                            echo "板子已恢复，第 ${i} 次探测成功"
+                            sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
+                                "${BOARD_USER}@${BOARD_IP}" \
+                                "bash -lc 'hostname; bm_version || true; uname -a'"
+                            exit 0
+                        fi
+                        echo "等待中... (${i}/60)"
+                        sleep 10
+                    done
+                    echo "等待超时：板子在约 10 分钟内未恢复 SSH"
+                    exit 1
+                '''
+            }
+        }
+    }
+    post {
+        success { echo "OTA 升级流程完成: ${params.BOARD_IP}" }
+        failure { echo "OTA 升级失败，请查看 Console Output" }
+    }
+}
