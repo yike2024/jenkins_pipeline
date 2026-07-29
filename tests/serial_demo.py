@@ -3,28 +3,35 @@
 import serial
 import time
 import sys
+import re
 
+# ANSI 转义序列过滤
 PORT = '/dev/ttyUSB0'
 BAUD = 115200
+ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
+
+def clean(text):
+    """去掉终端控制码，日志更干净"""
+    return ANSI_RE.sub('', text)
 
 def run_cmd(ser, cmd, expect, timeout=10):
-    """发一条命令，等到期望字符串出现为止。返回 (是否成功, 输出)"""
-    ser.reset_input_buffer()              # 清空接收缓冲区，避免读到上一条命令的残留
-    ser.write((cmd + '\n').encode())      # 发命令（相当于 minicom 里打字+回车）
+    ser.reset_input_buffer()
+    ser.write((cmd + '\n').encode())
     buf = b''
     deadline = time.time() + timeout
     while time.time() < deadline:
-        buf += ser.read(ser.in_waiting or 1)   # 读串口输出
-        if expect.encode() in buf:             # 等到期望内容 → 成功
-            return True, buf.decode(errors='replace')
-    return False, buf.decode(errors='replace') # 超时 → 失败
+        buf += ser.read(ser.in_waiting or 1)
+        if expect.encode() in ANSI_RE.sub('', buf.decode(errors='replace')):
+            return True, clean(buf.decode(errors='replace'))
+    return False, clean(buf.decode(errors='replace'))
 
 def main():
     ser = serial.Serial(PORT, BAUD, timeout=1)
     print(f'已打开 {PORT} @ {BAUD}')
 
     # 唤醒 shell：先发个回车，等命令行提示符（按你板子的实际提示符改，比如 '#' 或 '~ #'）
-    ok, out = run_cmd(ser, '', '#', timeout=5)
+    ok, out = run_cmd(ser, '', 'linaro@sophon', timeout=5)
+
     print(out)
 
     # 跑一条测试命令：比如查看系统版本
