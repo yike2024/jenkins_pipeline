@@ -14,7 +14,7 @@ pipeline {
                     sh '''
                         #!/bin/bash
                         set -e
-                        repo init -u https://github.com/sophgo/manifest.git -m development/all_repos.xml
+                        repo init -u https://github.com/sophgo/manifest.git -m release/all_repos.xml
                         # 已有本地仓库：先丢弃所有本地改动，避免 sync 冲突
                         repo forall -j8 -c 'git reset --hard HEAD; git clean -fdx' || true
                     '''
@@ -35,8 +35,10 @@ pipeline {
                     sh '''
                         #!/bin/bash
                         set -e
+			TSC=$(date +%Y%m%d_%H%M%S)
                         source build/envsetup_soc.sh
                         defconfig edge_wevb_emmc
+			repo manifest -r > manifest_${TSC}.xml
                         clean_edge_all && build_edge_all
                     '''
                 }
@@ -50,6 +52,7 @@ pipeline {
                     TS=$(date +%Y%m%d_%H%M%S)
                     DEST=/dailybuild/edge_wevb_emmc/${TS}
                     mkdir -p "$DEST"
+		    cp sophgo-sdk/manifest_*.xml "$DEST"/
                     cp -rv sophgo-sdk/install/soc_edge_wevb_emmc/. "$DEST"/
                     echo "产物已拷贝到宿主机: /media/cvitek/share/open/github/dailybuild/edge_wevb_emmc/${TS}"
                 '''
