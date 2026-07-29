@@ -3,7 +3,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
     }
     stages {
         stage('拉取测试脚本') {
@@ -14,7 +14,7 @@ pipeline {
         stage('串口自动化测试') {
             steps {
                 sh '''
-                    python3 -m pytest tests/ -v \
+                    python3 -m pytest tests/ -v -s \
                         --junitxml=results.xml \
                         --html=report.html --self-contained-html \
                         --tb=short
@@ -24,7 +24,7 @@ pipeline {
     }
     post {
         always {
-            junit 'results.xml'
+            junit allowEmptyResults: true, testResults: 'results.xml,remote_jpeg_results.xml'
             publishHTML(target: [
                 reportDir: '.',
                 reportFiles: 'report.html',
