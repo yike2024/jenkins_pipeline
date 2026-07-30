@@ -2,8 +2,8 @@ pipeline {
     agent any
     parameters {
         string(name: 'BOARD_IP', defaultValue: '', description: 'Board IP, empty = auto via serial')
-        string(name: 'FILE_SERVER_IP', defaultValue: '', description: 'File server IP for board scp')
-        string(name: 'SDCARD_TGZ', defaultValue: '', description: 'Absolute path of sdcard.tgz on file server')
+        string(name: 'FILE_SERVER_IP', defaultValue: '10.80.40.46', description: 'File server IP, default 10.80.40.46')
+        string(name: 'SDCARD_TGZ', defaultValue: '', description: 'Dir or full path of sdcard.tgz on file server; dir will append /sdcard.tgz')
     }
     environment {
         BOARD_USER = 'linaro'
@@ -28,10 +28,14 @@ pipeline {
                     def tgzPath = params.SDCARD_TGZ?.trim()
                     def fileServer = params.FILE_SERVER_IP?.trim()
                     if (!fileServer) {
-                        error('FILE_SERVER_IP required')
+                        fileServer = '10.80.40.46'
                     }
                     if (!tgzPath) {
                         error('SDCARD_TGZ required')
+                    }
+                    tgzPath = tgzPath.replaceAll(/\/+$/, '')
+                    if (!tgzPath.endsWith('sdcard.tgz')) {
+                        tgzPath = tgzPath + '/sdcard.tgz'
                     }
                     env.SDCARD_TGZ = tgzPath
                     env.FILE_SERVER_IP = fileServer
