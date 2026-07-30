@@ -64,23 +64,36 @@ pipeline {
                 sh '''
                     #!/bin/bash
                     set -e
-                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
-                    echo "在板子 ${BOARD_IP} 上准备 sshpass 并 scp 拉取..."
-                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" bash -s <<EOF
-set -e
-mkdir -p /data
-if ! command -v sshpass >/dev/null 2>&1; then
-    echo "板子缺少 sshpass，尝试安装..."
-    echo "${BOARD_PASS}" | sudo -S -p '' apt-get update -qq
-    echo "${BOARD_PASS}" | sudo -S -p '' apt-get install -y -qq sshpass
-fi
-command -v sshpass >/dev/null
-echo "源: ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}"
-echo "目标: /data/sdcard.tgz"
-sshpass -p "${FILE_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    "${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" /data/sdcard.tgz
-ls -lh /data/sdcard.tgz
-EOF
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
+                    echo "确保板子有 sshpass..."
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
+                        "command -v sshpass >/dev/null || (echo ${BOARD_PASS} | sudo -S -p '' apt-get update -qq && echo ${BOARD_PASS} | sudo -S -p '' apt-get install -y -qq sshpass)"
+
+                    echo "在板子上 scp: ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} -> /data/sdcard.tgz"
+                    set +e
+                    sshpass -p "${BOARD_PASS}" ssh -n ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
+                        "mkdir -p /data && sshpass -p '${FILE_PASS}' scp -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}' /data/sdcard.tgz && ls -lh /data/sdcard.tgz"
+                    RC=$?
+                    set -e
+                    if [ "${RC}" -eq 0 ]; then
+                        echo "板子 scp 成功"
+                        exit 0
+                    fi
+
+                    echo "板子 scp 失败(rc=${RC})，改由 Jenkins 中转拷贝..."
+                    LOCAL_TGZ="${WORKSPACE}/sdcard.tgz"
+                    rm -f "${LOCAL_TGZ}"
+                    sshpass -p "${FILE_PASS}" scp ${SSH_OPTS} \
+                        "${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" \
+                        "${LOCAL_TGZ}"
+                    ls -lh "${LOCAL_TGZ}"
+                    sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
+                        "${LOCAL_TGZ}" \
+                        "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
+                        "ls -lh /data/sdcard.tgz"
+                    rm -f "${LOCAL_TGZ}"
+                    echo "Jenkins 中转拷贝成功"
                 '''
             }
         }
