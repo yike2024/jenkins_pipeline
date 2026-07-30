@@ -13,7 +13,7 @@ def main():
         ok, out = wait_for_shell(ser, timeout=30)
         if not ok:
             ser.close()
-            print(f'连不上板子 shell\n{out}', file=sys.stderr)
+            print(f'shell not ready\n{out}', file=sys.stderr)
             sys.exit(1)
         ip, out = fetch_board_ip(ser)
         ser.close()
@@ -21,7 +21,7 @@ def main():
         sys.stdout = real_stdout
 
     if not ip:
-        print(f'无法解析板子 IP\n{out}', file=sys.stderr)
+        print(f'BOARD_IP parse failed\n{out}', file=sys.stderr)
         sys.exit(1)
     print(ip)
 

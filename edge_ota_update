@@ -1,9 +1,9 @@
 pipeline {
     agent any
     parameters {
-        string(name: 'BOARD_IP', defaultValue: '', description: '目标板子 IP，可留空：留空则通过串口 hostname -I 自动获取')
-        string(name: 'FILE_SERVER_IP', defaultValue: '', description: '可选。仅当 Jenkins 本地看不到刷机包、需要远程 scp 时填写')
-        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包路径。优先填 Jenkins 容器内路径，如 /dailybuild/ubuntu/xxx/sdcard.tgz；也可填宿主机路径 /media/cvitek/share/open/github/dailybuild/...')
+        string(name: 'BOARD_IP', defaultValue: '', description: 'Board IP, empty = auto via serial')
+        string(name: 'FILE_SERVER_IP', defaultValue: '', description: 'File server IP for board scp')
+        string(name: 'SDCARD_TGZ', defaultValue: '', description: 'Absolute path of sdcard.tgz on file server')
     }
     environment {
         BOARD_USER = 'linaro'
@@ -17,106 +17,56 @@ pipeline {
         timeout(time: 120, unit: 'MINUTES')
     }
     stages {
-        stage('拉取脚本') {
+        stage('Checkout') {
             steps {
                 checkout scm
             }
         }
-        stage('参数检查与获取板子 IP') {
+        stage('Resolve BOARD_IP') {
             steps {
                 script {
                     def tgzPath = params.SDCARD_TGZ?.trim()
+                    def fileServer = params.FILE_SERVER_IP?.trim()
+                    if (!fileServer) {
+                        error('FILE_SERVER_IP required')
+                    }
                     if (!tgzPath) {
-                        error('请填写 SDCARD_TGZ')
+                        error('SDCARD_TGZ required')
                     }
                     env.SDCARD_TGZ = tgzPath
-                    env.FILE_SERVER_IP = params.FILE_SERVER_IP?.trim() ?: ''
+                    env.FILE_SERVER_IP = fileServer
 
                     def ip = params.BOARD_IP?.trim()
-                    if (ip) {
-                        echo "使用手动填写的 BOARD_IP=${ip}"
-                    } else {
-                        echo "BOARD_IP 为空，通过串口自动获取..."
+                    if (!ip) {
                         ip = sh(
                             script: 'python3 tests/get_board_ip.py',
                             returnStdout: true
                         ).trim()
                         if (!ip) {
-                            error('串口未能获取到板子 IP')
+                            error('failed to get BOARD_IP from serial')
                         }
-                        echo "串口获取到 BOARD_IP=${ip}"
                     }
                     env.BOARD_IP = ip
+                    echo "BOARD_IP=${ip}"
+                    echo "FILE_SERVER_IP=${fileServer}"
+                    echo "SDCARD_TGZ=${tgzPath}"
                 }
-                sh '''
-                    #!/bin/bash
-                    set -e
-                    command -v sshpass >/dev/null
-                    command -v ssh >/dev/null
-                    command -v scp >/dev/null
-                    echo "BOARD_IP=[${BOARD_IP}]"
-                    echo "FILE_SERVER_IP=[${FILE_SERVER_IP}]"
-                    echo "SDCARD_TGZ=[${SDCARD_TGZ}]"
-                '''
             }
         }
-        stage('拷贝刷机包到板子') {
+        stage('Board scp sdcard.tgz') {
             steps {
                 sh '''
                     #!/bin/bash
                     set -e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
-                    LOCAL_TGZ=""
-
-                    echo "==== 排查 Jenkins 容器内可见路径 ===="
-                    ls -ld /dailybuild /media /media/cvitek /media/cvitek/share 2>/dev/null || true
-                    ls /dailybuild 2>/dev/null || true
-                    ls /dailybuild/ubuntu 2>/dev/null || true
-
-                    if [ -f "${SDCARD_TGZ}" ]; then
-                        LOCAL_TGZ="${SDCARD_TGZ}"
-                        echo "命中参数路径: ${LOCAL_TGZ}"
-                    fi
-
-                    if [ -z "${LOCAL_TGZ}" ]; then
-                        MAPPED=$(echo "${SDCARD_TGZ}" | sed 's|^/media/cvitek/share/open/github/dailybuild|/dailybuild|')
-                        if [ -f "${MAPPED}" ]; then
-                            LOCAL_TGZ="${MAPPED}"
-                            echo "命中映射路径: ${LOCAL_TGZ}"
-                        fi
-                    fi
-
-                    if [ -n "${LOCAL_TGZ}" ]; then
-                        ls -lh "${LOCAL_TGZ}"
-                        echo "Jenkins 本地推送到板子..."
-                        sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" "mkdir -p /data"
-                        sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
-                            "${LOCAL_TGZ}" \
-                            "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
-                        sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" "ls -lh /data/sdcard.tgz"
-                        echo "本地推送成功"
-                        exit 0
-                    fi
-
-                    echo "Jenkins 容器内看不到刷机包，改由板子从文件服务器 scp 拉取"
-                    if [ -z "${FILE_SERVER_IP}" ]; then
-                        echo "请填写 FILE_SERVER_IP，或把 dailybuild 目录挂载进 Jenkins 容器"
-                        echo "例如宿主机: /media/cvitek/share/open/github/dailybuild -> 容器: /dailybuild"
-                        exit 1
-                    fi
-
-                    echo "确保板子有 sshpass..."
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "command -v sshpass >/dev/null || (echo ${BOARD_PASS} | sudo -S -p '' apt-get update -qq && echo ${BOARD_PASS} | sudo -S -p '' apt-get install -y -qq sshpass)"
-
-                    echo "板子执行: scp ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} /data/sdcard.tgz"
                     sshpass -p "${BOARD_PASS}" ssh -n ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "mkdir -p /data && sshpass -p '${FILE_PASS}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}' /data/sdcard.tgz && ls -lh /data/sdcard.tgz"
-                    echo "板子拉取成功"
                 '''
             }
         }
-        stage('解压并整理 OTA 目录') {
+        stage('Extract OTA') {
             steps {
                 sh '''
                     #!/bin/bash
@@ -130,26 +80,23 @@ pipeline {
                 '''
             }
         }
-        stage('执行 OTA 升级') {
+        stage('Run local_update') {
             steps {
                 sh '''
                     #!/bin/bash
                     set +e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10"
-                    echo "执行: sudo /data/ota/local_update.sh /data/ota/md5.txt"
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "echo '${BOARD_PASS}' | sudo -S -p '' /data/ota/local_update.sh /data/ota/md5.txt"
                     RC=$?
-                    echo "local_update.sh 退出码: ${RC}"
                     if [ "${RC}" -ne 0 ] && [ "${RC}" -ne 255 ]; then
-                        echo "OTA 脚本执行失败"
                         exit "${RC}"
                     fi
                     exit 0
                 '''
             }
         }
-        stage('串口监控并等待恢复') {
+        stage('Serial wait & bm_version') {
             steps {
                 script {
                     def rc = sh(
@@ -157,23 +104,22 @@ pipeline {
                         returnStatus: true
                     )
                     if (rc != 0) {
-                        error('串口等待板子恢复失败/超时')
+                        error('serial wait timeout')
                     }
                     def ip = sh(
                         script: 'test -f board_ip.txt && cat board_ip.txt || true',
                         returnStdout: true
                     ).trim()
                     if (!ip) {
-                        error('未从串口获取到升级后的 BOARD_IP')
+                        error('BOARD_IP missing after OTA')
                     }
                     env.BOARD_IP = ip
-                    echo "升级后 BOARD_IP=${ip}"
+                    echo "BOARD_IP=${ip}"
                 }
                 sh '''
                     #!/bin/bash
                     set +e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-                    echo "用新 IP 验证 SSH: ${BOARD_IP}"
                     for i in 1 2 3 4 5; do
                         if sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
                             "${BOARD_USER}@${BOARD_IP}" "bash -lc 'hostname; bm_version || true; uname -a; hostname -I'"; then
@@ -181,14 +127,13 @@ pipeline {
                         fi
                         sleep 5
                     done
-                    echo "警告: 串口已恢复且已拿到 IP，但 SSH 暂不可用，请人工确认"
                     exit 0
                 '''
             }
         }
     }
     post {
-        success { echo "OTA 升级流程完成: ${env.BOARD_IP}" }
-        failure { echo "OTA 升级失败，请查看 Console Output" }
+        success { echo "OK BOARD_IP=${env.BOARD_IP}" }
+        failure { echo "FAILED" }
     }
 }

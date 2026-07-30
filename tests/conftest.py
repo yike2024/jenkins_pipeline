@@ -57,13 +57,11 @@ def try_serial_login(ser, text, state):
     now = time.time()
     if has_password_prompt(text):
         if now - state.get('last_password', 0) > 3:
-            print('\n[串口] 检测到 Password，输入密码', flush=True)
             ser.write((BOARD_PASS + '\n').encode())
             state['last_password'] = now
         return True
     if has_login_prompt(text):
         if now - state.get('last_login', 0) > 3:
-            print(f'\n[串口] 检测到 login，输入用户名 {BOARD_USER}', flush=True)
             ser.write((BOARD_USER + '\n').encode())
             state['last_login'] = now
         return True
@@ -205,7 +203,6 @@ def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5, stream=True, own_line=False
 
 
 def wait_for_shell(ser, timeout=60):
-    print('\n[串口] 尝试唤醒 shell...', flush=True)
     try:
         ser.reset_input_buffer()
     except SerialException:
@@ -278,7 +275,7 @@ def board_ip(board):
     os.environ['BOARD_IP'] = ip
     with open(os.path.abspath(BOARD_IP_FILE), 'w', encoding='utf-8') as f:
         f.write(ip + '\n')
-    print(f'\n板子 IP: {ip}', flush=True)
+    print(f'\nBOARD_IP={ip}', flush=True)
     return ip
 
 
