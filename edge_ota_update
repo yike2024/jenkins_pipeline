@@ -25,12 +25,17 @@ pipeline {
         stage('参数检查与获取板子 IP') {
             steps {
                 script {
-                    if (!params.FILE_SERVER_IP?.trim()) {
+                    def fileServer = params.FILE_SERVER_IP?.trim()
+                    def tgzPath = params.SDCARD_TGZ?.trim()
+                    if (!fileServer) {
                         error('请填写 FILE_SERVER_IP（刷机包所在机器）')
                     }
-                    if (!params.SDCARD_TGZ?.trim()) {
+                    if (!tgzPath) {
                         error('请填写 SDCARD_TGZ（文件服务器上的绝对路径）')
                     }
+                    env.FILE_SERVER_IP = fileServer
+                    env.SDCARD_TGZ = tgzPath
+
                     def ip = params.BOARD_IP?.trim()
                     if (ip) {
                         echo "使用手动填写的 BOARD_IP=${ip}"
@@ -52,10 +57,10 @@ pipeline {
                     set -e
                     command -v sshpass >/dev/null
                     command -v ssh >/dev/null
-                    echo "BOARD_IP=${BOARD_IP}            # 目标板子"
-                    echo "FILE_SERVER_IP=${FILE_SERVER_IP}  # 刷机包所在机器"
-                    echo "SDCARD_TGZ=${SDCARD_TGZ}      # 源路径"
-                    echo "流程: Jenkins -> SSH 板子 -> 板子 scp ${FILE_SERVER_IP}:${SDCARD_TGZ} -> /data/sdcard.tgz"
+                    echo "BOARD_IP=[${BOARD_IP}]"
+                    echo "FILE_SERVER_IP=[${FILE_SERVER_IP}]"
+                    echo "SDCARD_TGZ=[${SDCARD_TGZ}]"
+                    echo "流程: 板子/Jenkins scp ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} -> 板子:/data/sdcard.tgz"
                 '''
             }
         }
@@ -65,6 +70,11 @@ pipeline {
                     #!/bin/bash
                     set -e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
+
+                    echo "先在文件服务器上确认刷机包存在..."
+                    sshpass -p "${FILE_PASS}" ssh ${SSH_OPTS} "${FILE_USER}@${FILE_SERVER_IP}" \
+                        "test -f '${SDCARD_TGZ}' && ls -lh '${SDCARD_TGZ}'"
+
                     echo "确保板子有 sshpass..."
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "command -v sshpass >/dev/null || (echo ${BOARD_PASS} | sudo -S -p '' apt-get update -qq && echo ${BOARD_PASS} | sudo -S -p '' apt-get install -y -qq sshpass)"
@@ -72,7 +82,7 @@ pipeline {
                     echo "在板子上 scp: ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} -> /data/sdcard.tgz"
                     set +e
                     sshpass -p "${BOARD_PASS}" ssh -n ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
-                        "mkdir -p /data && sshpass -p '${FILE_PASS}' scp -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}' /data/sdcard.tgz && ls -lh /data/sdcard.tgz"
+                        "mkdir -p /data && sshpass -p '${FILE_PASS}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}' /data/sdcard.tgz && ls -lh /data/sdcard.tgz"
                     RC=$?
                     set -e
                     if [ "${RC}" -eq 0 ]; then
