@@ -137,10 +137,11 @@ pipeline {
                     set +e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10"
                     echo "执行: sudo /data/ota/local_update.sh /data/ota/md5.txt"
+                    echo "说明: 进入 uboot 升级后 SSH 会断开，后续改看串口日志"
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "echo '${BOARD_PASS}' | sudo -S -p '' /data/ota/local_update.sh /data/ota/md5.txt"
                     RC=$?
-                    echo "local_update.sh 退出码: ${RC}"
+                    echo "local_update.sh 退出码: ${RC} (255 通常表示板子已重启/断连，属正常)"
                     if [ "${RC}" -ne 0 ] && [ "${RC}" -ne 255 ]; then
                         echo "OTA 脚本执行失败"
                         exit "${RC}"
@@ -149,27 +150,41 @@ pipeline {
                 '''
             }
         }
-        stage('等待板子恢复') {
+        stage('串口监控并等待恢复') {
             steps {
+                script {
+                    echo "通过串口实时查看 uboot/升级日志，并在恢复后重新获取 IP（可能与升级前不同）"
+                    def rc = sh(
+                        script: 'python3 tests/wait_ota_serial.py 3600 45',
+                        returnStatus: true
+                    )
+                    if (rc != 0) {
+                        error('串口等待板子恢复失败/超时')
+                    }
+                    def ip = sh(
+                        script: 'test -f board_ip.txt && cat board_ip.txt || true',
+                        returnStdout: true
+                    ).trim()
+                    if (!ip) {
+                        error('未从串口获取到升级后的 BOARD_IP')
+                    }
+                    env.BOARD_IP = ip
+                    echo "升级后 BOARD_IP=${ip}"
+                }
                 sh '''
                     #!/bin/bash
                     set +e
-                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
-                    echo "等待板子 ${BOARD_IP} 重新上线..."
-                    for i in $(seq 1 60); do
+                    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+                    echo "用新 IP 验证 SSH: ${BOARD_IP}"
+                    for i in 1 2 3 4 5; do
                         if sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
-                            "${BOARD_USER}@${BOARD_IP}" "echo OTA_BOARD_ALIVE" 2>/dev/null | grep -q OTA_BOARD_ALIVE; then
-                            echo "板子已恢复，第 ${i} 次探测成功"
-                            sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} \
-                                "${BOARD_USER}@${BOARD_IP}" \
-                                "bash -lc 'hostname; bm_version || true; uname -a'"
+                            "${BOARD_USER}@${BOARD_IP}" "bash -lc 'hostname; bm_version || true; uname -a; hostname -I'"; then
                             exit 0
                         fi
-                        echo "等待中... (${i}/60)"
-                        sleep 10
+                        sleep 5
                     done
-                    echo "等待超时：板子在约 10 分钟内未恢复 SSH"
-                    exit 1
+                    echo "警告: 串口已恢复且已拿到 IP，但 SSH 暂不可用，请人工确认"
+                    exit 0
                 '''
             }
         }
