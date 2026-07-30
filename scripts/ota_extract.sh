@@ -3,7 +3,7 @@ set -e
 mkdir -p /data/ota
 rm -rf /data/ota/*
 echo "解压 /data/sdcard.tgz -> /data/ota"
-tar -xzf /data/sdcard.tgz -C /data/ota
+tar -xzvf /data/sdcard.tgz -C /data/ota
 if [ -d /data/ota/sdcard ]; then
     echo "检测到 /data/ota/sdcard，移动其中文件到 /data/ota"
     shopt -s dotglob

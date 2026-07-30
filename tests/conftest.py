@@ -37,29 +37,35 @@ def has_prompt(text):
     return bool(PROMPT_RE.search(text))
 
 
+def _tail(text, n=240):
+    return text[-n:] if len(text) > n else text
+
+
 def has_login_prompt(text):
-    return bool(LOGIN_RE.search(text.rstrip()))
+    return bool(LOGIN_RE.search(_tail(text).rstrip()))
 
 
 def has_password_prompt(text):
-    return bool(PASSWORD_RE.search(text.rstrip()))
+    return bool(PASSWORD_RE.search(_tail(text).rstrip()))
 
 
 def try_serial_login(ser, text, state):
+    if state.get('logged_in') or has_prompt(text):
+        state['logged_in'] = True
+        return False
+
     now = time.time()
     if has_password_prompt(text):
-        if now - state.get('last_password', 0) > 2:
-            print(f'\n[串口] 检测到 Password，输入密码', flush=True)
+        if now - state.get('last_password', 0) > 3:
+            print('\n[串口] 检测到 Password，输入密码', flush=True)
             ser.write((BOARD_PASS + '\n').encode())
             state['last_password'] = now
-            state['login_sent'] = False
         return True
     if has_login_prompt(text):
-        if now - state.get('last_login', 0) > 2:
+        if now - state.get('last_login', 0) > 3:
             print(f'\n[串口] 检测到 login，输入用户名 {BOARD_USER}', flush=True)
             ser.write((BOARD_USER + '\n').encode())
             state['last_login'] = now
-            state['login_sent'] = True
         return True
     return False
 
