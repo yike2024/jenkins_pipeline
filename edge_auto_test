@@ -3,7 +3,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 60, unit: 'MINUTES')
+        timeout(time: 180, unit: 'MINUTES')
     }
     stages {
         stage('拉取测试脚本') {

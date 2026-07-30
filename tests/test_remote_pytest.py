@@ -8,8 +8,9 @@ from conftest import (
     run_cmd,
     PROMPT,
     REMOTE_TEST_ROOT,
-    REMOTE_JPEG_DIR,
     JPEG_WORKSPACE,
+    JPEG_RSYNC_SRC,
+    JPEG_RSYNC_USER_PASS,
 )
 
 REMOTE_TEST_DIR = REMOTE_TEST_ROOT
@@ -17,8 +18,10 @@ REMOTE_XML = '/tmp/jpeg_results.xml'
 LOCAL_XML = os.path.join(os.path.dirname(__file__), '..', 'remote_jpeg_results.xml')
 BOARD_USER = os.environ.get('BOARD_USER', 'linaro')
 BOARD_SSH_PASS = os.environ.get('BOARD_SSH_PASS', 'linaro')
+BOARD_PASS = os.environ.get('BOARD_PASS', 'linaro')
 
 PYTEST_TIMEOUT = 1800
+RSYNC_TIMEOUT = 1800
 SCP_TIMEOUT = 60
 
 BEGIN_MARKER = 'XML_BEGIN_MARK'
@@ -31,6 +34,8 @@ def _ssh_opts():
         '-o', 'StrictHostKeyChecking=no',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-o', 'ConnectTimeout=10',
+        '-o', 'ServerAliveInterval=30',
+        '-o', 'ServerAliveCountMax=120',
     ]
 
 
@@ -38,6 +43,70 @@ def _wrap_ssh(cmd_list):
     if BOARD_SSH_PASS:
         return ['sshpass', '-p', BOARD_SSH_PASS] + cmd_list
     return cmd_list + ['-o', 'BatchMode=yes']
+
+
+def ssh_run_stream(ip, remote_cmd, timeout=600):
+    cmd = _wrap_ssh(['ssh'] + _ssh_opts() + [f'{BOARD_USER}@{ip}', remote_cmd])
+    print(f'\n$ ssh {BOARD_USER}@{ip} {remote_cmd}', flush=True)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as e:
+        return False, str(e)
+
+    lines = []
+    deadline = time.time() + timeout
+    try:
+        assert proc.stdout is not None
+        while True:
+            if time.time() > deadline:
+                proc.kill()
+                lines.append('\ntimeout\n')
+                break
+            line = proc.stdout.readline()
+            if line == '' and proc.poll() is not None:
+                break
+            if line:
+                print(line, end='', flush=True)
+                lines.append(line)
+            else:
+                time.sleep(0.05)
+        rc = proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+        raise
+    return rc == 0, ''.join(lines)
+
+
+def sync_jpeg_workspace(ip):
+    ok, out = ssh_run_stream(
+        ip,
+        f"echo {BOARD_PASS} | sudo -S -p '' bash -c "
+        f"'command -v rsync >/dev/null && command -v sshpass >/dev/null || "
+        f"(apt-get update -qq && apt-get install -y -qq rsync sshpass)'",
+        timeout=300,
+    )
+    assert ok, f'install rsync/sshpass failed\n{out}'
+
+    ok, out = ssh_run_stream(
+        ip,
+        f'mkdir -p {JPEG_WORKSPACE} && '
+        f'sshpass -p {JPEG_RSYNC_USER_PASS} rsync -arvcL '
+        f'-e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" '
+        f'{JPEG_RSYNC_SRC} {JPEG_WORKSPACE}/ && '
+        f'test -d {JPEG_WORKSPACE}/opencvjpu && test -d {JPEG_WORKSPACE}/bmapi && '
+        f'ls {JPEG_WORKSPACE}/opencvjpu | head',
+        timeout=RSYNC_TIMEOUT,
+    )
+    assert ok, f'jpeg rsync failed\n{out}'
+    assert 'Permission denied' not in out
+    assert 'command not found' not in out
+    return out
 
 
 def _remote_pytest_cmd():
@@ -52,55 +121,7 @@ def _remote_pytest_cmd():
 
 
 def run_remote_pytest_ssh(ip):
-    remote_cmd = _remote_pytest_cmd()
-    cmd = _wrap_ssh(['ssh'] + _ssh_opts() + [f'{BOARD_USER}@{ip}', remote_cmd])
-    print(f'\n$ ssh {BOARD_USER}@{ip} {remote_cmd}', flush=True)
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError as e:
-        return False, str(e)
-
-    lines = []
-    deadline = time.time() + PYTEST_TIMEOUT
-    try:
-        assert proc.stdout is not None
-        while True:
-            if time.time() > deadline:
-                proc.kill()
-                lines.append('\nssh pytest timeout\n')
-                break
-            line = proc.stdout.readline()
-            if line == '' and proc.poll() is not None:
-                break
-            if line:
-                print(line, end='', flush=True)
-                lines.append(line)
-            else:
-                time.sleep(0.05)
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()
-        raise
-
-    out = ''.join(lines)
-    if any(x in out for x in (
-        'Permission denied',
-        'Connection refused',
-        'No route to host',
-        'Connection timed out',
-        'Could not resolve hostname',
-    )):
-        return False, out
-    if 'sshpass' in out and 'not found' in out:
-        return False, out
-    return True, out
+    return ssh_run_stream(ip, _remote_pytest_cmd(), timeout=PYTEST_TIMEOUT)
 
 
 def run_remote_pytest_serial(board):
@@ -188,7 +209,8 @@ def count_results(xml_text):
 def test_run_remote_jpeg(board, board_ip):
     print(f'BOARD_IP={board_ip}', flush=True)
     print(f'TEST_WORKSPACE={JPEG_WORKSPACE}', flush=True)
-    print(f'REMOTE_TEST_DIR={REMOTE_TEST_DIR}', flush=True)
+
+    sync_jpeg_workspace(board_ip)
 
     started, out = run_remote_pytest_ssh(board_ip)
     if not started:
@@ -200,7 +222,6 @@ def test_run_remote_jpeg(board, board_ip):
         f'missing utils\n{out}'
     )
     assert 'ImportError while loading conftest' not in out, f'conftest import error\n{out}'
-    assert "doesn't exist" not in out, f'missing jpeg test resources, check rsync/TEST_WORKSPACE\n{out}'
 
     xml_text, err = fetch_xml_via_scp(board_ip)
     if not xml_text:
@@ -219,5 +240,4 @@ def test_run_remote_jpeg(board, board_ip):
         f'{errors} error, {skipped} skipped (total {total})'
     )
     print(summary, flush=True)
-
     assert failures == 0 and errors == 0, summary
