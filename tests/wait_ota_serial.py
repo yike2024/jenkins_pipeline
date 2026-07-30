@@ -8,6 +8,7 @@ from conftest import (
     clean,
     has_prompt,
     fetch_board_ip,
+    try_serial_login,
     _serial_in_waiting,
     _serial_read,
     _stream_delta,
@@ -31,6 +32,7 @@ def main():
     deadline = start + timeout
     last_nudge = 0
     prompt_ready_after = start + ignore_prompt_sec
+    login_state = {}
 
     try:
         while time.time() < deadline:
@@ -42,11 +44,18 @@ def main():
             printed = _stream_delta(text, printed)
 
             now = time.time()
+            if now >= prompt_ready_after:
+                if try_serial_login(ser, text, login_state):
+                    time.sleep(0.5)
+                    continue
+
             if now >= prompt_ready_after and has_prompt(text):
                 print('\n[串口] 检测到系统 shell 提示符，确认网络...', flush=True)
                 time.sleep(2)
                 ok, out = run_cmd(ser, '', PROMPT, timeout=10, quiet=0.5)
                 if not ok:
+                    buf = b''
+                    printed = 0
                     continue
                 ip, ip_out = fetch_board_ip(ser)
                 if not ip:
@@ -62,7 +71,8 @@ def main():
                 return 0
 
             if now - last_nudge > 5 and now >= prompt_ready_after:
-                ser.write(b'\n')
+                if not (has_prompt(text) or 'login:' in text.lower() or 'password:' in text.lower()):
+                    ser.write(b'\n')
                 last_nudge = now
             time.sleep(0.05)
 

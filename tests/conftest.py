@@ -10,6 +10,10 @@ PORT = '/dev/ttyUSB0'
 BAUD = 115200
 PROMPT = 'linaro@sophon'
 PROMPT_RE = re.compile(r'l?inaro@sophon')
+LOGIN_RE = re.compile(r'login:\s*$', re.IGNORECASE | re.MULTILINE)
+PASSWORD_RE = re.compile(r'password:\s*$', re.IGNORECASE | re.MULTILINE)
+BOARD_USER = os.environ.get('BOARD_USER', 'linaro')
+BOARD_PASS = os.environ.get('BOARD_PASS', 'linaro')
 BOARD_IP_FILE = os.path.join(os.path.dirname(__file__), '..', 'board_ip.txt')
 REMOTE_TEST_ROOT = '/data/athena2_daily_test'
 REMOTE_JPEG_DIR = f'{REMOTE_TEST_ROOT}/multimedia/jpeg'
@@ -31,6 +35,33 @@ def clean(text):
 
 def has_prompt(text):
     return bool(PROMPT_RE.search(text))
+
+
+def has_login_prompt(text):
+    return bool(LOGIN_RE.search(text.rstrip()))
+
+
+def has_password_prompt(text):
+    return bool(PASSWORD_RE.search(text.rstrip()))
+
+
+def try_serial_login(ser, text, state):
+    now = time.time()
+    if has_password_prompt(text):
+        if now - state.get('last_password', 0) > 2:
+            print(f'\n[串口] 检测到 Password，输入密码', flush=True)
+            ser.write((BOARD_PASS + '\n').encode())
+            state['last_password'] = now
+            state['login_sent'] = False
+        return True
+    if has_login_prompt(text):
+        if now - state.get('last_login', 0) > 2:
+            print(f'\n[串口] 检测到 login，输入用户名 {BOARD_USER}', flush=True)
+            ser.write((BOARD_USER + '\n').encode())
+            state['last_login'] = now
+            state['login_sent'] = True
+        return True
+    return False
 
 
 def parse_board_ip(text):
@@ -167,7 +198,7 @@ def run_cmd(ser, cmd, expect, timeout=10, quiet=0.5, stream=True, own_line=False
     return False, text
 
 
-def wait_for_shell(ser, timeout=30):
+def wait_for_shell(ser, timeout=60):
     print('\n[串口] 尝试唤醒 shell...', flush=True)
     try:
         ser.reset_input_buffer()
@@ -183,6 +214,7 @@ def wait_for_shell(ser, timeout=30):
     printed = 0
     deadline = time.time() + timeout
     last_nudge = 0
+    login_state = {}
     while time.time() < deadline:
         n = _serial_in_waiting(ser)
         chunk = _serial_read(ser, n or 1)
@@ -195,8 +227,12 @@ def wait_for_shell(ser, timeout=30):
             run_cmd(ser, 'stty echo', PROMPT, timeout=5, quiet=0.2)
             return True, text
 
+        if try_serial_login(ser, text, login_state):
+            time.sleep(0.5)
+            continue
+
         now = time.time()
-        if now - last_nudge > 2:
+        if now - last_nudge > 3:
             ser.write(b'\n')
             last_nudge = now
         time.sleep(0.05)
