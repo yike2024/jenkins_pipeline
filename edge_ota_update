@@ -2,8 +2,8 @@ pipeline {
     agent any
     parameters {
         string(name: 'BOARD_IP', defaultValue: '', description: '目标板子 IP，可留空：留空则通过串口 hostname -I 自动获取')
-        string(name: 'FILE_SERVER_IP', defaultValue: '', description: '刷机包所在机器 IP（板子从这台机器 scp 拉取）')
-        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包在文件服务器上的绝对路径，例如 /media/cvitek/share/open/github/dailybuild/ubuntu/xxx/sdcard.tgz')
+        string(name: 'FILE_SERVER_IP', defaultValue: '', description: '可选。仅当 Jenkins 本地看不到刷机包、需要远程 scp 时填写')
+        string(name: 'SDCARD_TGZ', defaultValue: '', description: '刷机包路径。优先填 Jenkins 容器内路径，如 /dailybuild/ubuntu/xxx/sdcard.tgz；也可填宿主机路径 /media/cvitek/share/open/github/dailybuild/...')
     }
     environment {
         BOARD_USER = 'linaro'
@@ -25,16 +25,12 @@ pipeline {
         stage('参数检查与获取板子 IP') {
             steps {
                 script {
-                    def fileServer = params.FILE_SERVER_IP?.trim()
                     def tgzPath = params.SDCARD_TGZ?.trim()
-                    if (!fileServer) {
-                        error('请填写 FILE_SERVER_IP（刷机包所在机器）')
-                    }
                     if (!tgzPath) {
-                        error('请填写 SDCARD_TGZ（文件服务器上的绝对路径）')
+                        error('请填写 SDCARD_TGZ')
                     }
-                    env.FILE_SERVER_IP = fileServer
                     env.SDCARD_TGZ = tgzPath
+                    env.FILE_SERVER_IP = params.FILE_SERVER_IP?.trim() ?: ''
 
                     def ip = params.BOARD_IP?.trim()
                     if (ip) {
@@ -57,53 +53,87 @@ pipeline {
                     set -e
                     command -v sshpass >/dev/null
                     command -v ssh >/dev/null
+                    command -v scp >/dev/null
                     echo "BOARD_IP=[${BOARD_IP}]"
                     echo "FILE_SERVER_IP=[${FILE_SERVER_IP}]"
                     echo "SDCARD_TGZ=[${SDCARD_TGZ}]"
-                    echo "流程: 板子/Jenkins scp ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} -> 板子:/data/sdcard.tgz"
                 '''
             }
         }
-        stage('板子 scp 拉取刷机包') {
+        stage('拷贝刷机包到板子') {
             steps {
                 sh '''
                     #!/bin/bash
                     set -e
                     SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=120"
+                    LOCAL_TGZ=""
 
-                    echo "先在文件服务器上确认刷机包存在..."
-                    sshpass -p "${FILE_PASS}" ssh ${SSH_OPTS} "${FILE_USER}@${FILE_SERVER_IP}" \
-                        "test -f '${SDCARD_TGZ}' && ls -lh '${SDCARD_TGZ}'"
+                    # 1) 直接使用参数路径
+                    if [ -f "${SDCARD_TGZ}" ]; then
+                        LOCAL_TGZ="${SDCARD_TGZ}"
+                        echo "使用本地文件: ${LOCAL_TGZ}"
+                    fi
 
-                    echo "确保板子有 sshpass..."
-                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
-                        "command -v sshpass >/dev/null || (echo ${BOARD_PASS} | sudo -S -p '' apt-get update -qq && echo ${BOARD_PASS} | sudo -S -p '' apt-get install -y -qq sshpass)"
+                    # 2) 宿主机 dailybuild 路径映射到容器 /dailybuild
+                    if [ -z "${LOCAL_TGZ}" ]; then
+                        MAPPED=$(echo "${SDCARD_TGZ}" | sed 's|^/media/cvitek/share/open/github/dailybuild|/dailybuild|')
+                        if [ "${MAPPED}" != "${SDCARD_TGZ}" ] && [ -f "${MAPPED}" ]; then
+                            LOCAL_TGZ="${MAPPED}"
+                            echo "使用容器映射路径: ${LOCAL_TGZ}"
+                        fi
+                    fi
 
-                    echo "在板子上 scp: ${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ} -> /data/sdcard.tgz"
-                    set +e
-                    sshpass -p "${BOARD_PASS}" ssh -n ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
-                        "mkdir -p /data && sshpass -p '${FILE_PASS}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}' /data/sdcard.tgz && ls -lh /data/sdcard.tgz"
-                    RC=$?
-                    set -e
-                    if [ "${RC}" -eq 0 ]; then
-                        echo "板子 scp 成功"
+                    # 3) 常见候选路径再试一次
+                    if [ -z "${LOCAL_TGZ}" ]; then
+                        BASE="$(basename "${SDCARD_TGZ}")"
+                        for cand in \
+                            "/dailybuild/ubuntu/$(basename "$(dirname "${SDCARD_TGZ}")")/${BASE}" \
+                            "/dailybuild/$(basename "$(dirname "${SDCARD_TGZ}")")/${BASE}"
+                        do
+                            if [ -f "${cand}" ]; then
+                                LOCAL_TGZ="${cand}"
+                                echo "使用候选本地路径: ${LOCAL_TGZ}"
+                                break
+                            fi
+                        done
+                    fi
+
+                    if [ -n "${LOCAL_TGZ}" ]; then
+                        ls -lh "${LOCAL_TGZ}"
+                        echo "Jenkins 本地 scp -> ${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
+                        sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" "mkdir -p /data"
+                        sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
+                            "${LOCAL_TGZ}" \
+                            "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
+                        sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
+                            "ls -lh /data/sdcard.tgz"
+                        echo "本地拷贝成功"
                         exit 0
                     fi
 
-                    echo "板子 scp 失败(rc=${RC})，改由 Jenkins 中转拷贝..."
-                    LOCAL_TGZ="${WORKSPACE}/sdcard.tgz"
-                    rm -f "${LOCAL_TGZ}"
+                    echo "Jenkins 本地看不到刷机包，尝试远程拉取..."
+                    if [ -z "${FILE_SERVER_IP}" ]; then
+                        echo "本地无文件，且未填写 FILE_SERVER_IP"
+                        echo "请把 SDCARD_TGZ 改成容器内路径，例如:"
+                        echo "  /dailybuild/ubuntu/2026-07-30_003005/sdcard.tgz"
+                        echo "可在 Jenkins 容器内执行: ls /dailybuild/ubuntu/"
+                        exit 1
+                    fi
+
+                    TMP_TGZ="${WORKSPACE}/sdcard.tgz"
+                    rm -f "${TMP_TGZ}"
                     sshpass -p "${FILE_PASS}" scp ${SSH_OPTS} \
                         "${FILE_USER}@${FILE_SERVER_IP}:${SDCARD_TGZ}" \
-                        "${LOCAL_TGZ}"
-                    ls -lh "${LOCAL_TGZ}"
+                        "${TMP_TGZ}"
+                    ls -lh "${TMP_TGZ}"
+                    sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" "mkdir -p /data"
                     sshpass -p "${BOARD_PASS}" scp ${SSH_OPTS} \
-                        "${LOCAL_TGZ}" \
+                        "${TMP_TGZ}" \
                         "${BOARD_USER}@${BOARD_IP}:/data/sdcard.tgz"
                     sshpass -p "${BOARD_PASS}" ssh ${SSH_OPTS} "${BOARD_USER}@${BOARD_IP}" \
                         "ls -lh /data/sdcard.tgz"
-                    rm -f "${LOCAL_TGZ}"
-                    echo "Jenkins 中转拷贝成功"
+                    rm -f "${TMP_TGZ}"
+                    echo "远程中转拷贝成功"
                 '''
             }
         }
