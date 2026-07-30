@@ -4,9 +4,15 @@ import time
 import subprocess
 import xml.etree.ElementTree as ET
 import pytest
-from conftest import run_cmd, PROMPT, REMOTE_JPEG_DIR
+from conftest import (
+    run_cmd,
+    PROMPT,
+    REMOTE_TEST_ROOT,
+    REMOTE_JPEG_DIR,
+    JPEG_WORKSPACE,
+)
 
-REMOTE_TEST_DIR = REMOTE_JPEG_DIR
+REMOTE_TEST_DIR = REMOTE_TEST_ROOT
 REMOTE_XML = '/tmp/jpeg_results.xml'
 LOCAL_XML = os.path.join(os.path.dirname(__file__), '..', 'remote_jpeg_results.xml')
 BOARD_USER = os.environ.get('BOARD_USER', 'linaro')
@@ -37,8 +43,9 @@ def _wrap_ssh(cmd_list):
 def _remote_pytest_cmd():
     inner = (
         f'cd {REMOTE_TEST_DIR} && '
+        f'export TEST_WORKSPACE={JPEG_WORKSPACE} && '
         f'export PYTHONPATH=/data:/data/athena2_daily_test:$PYTHONPATH && '
-        f'python3 -m pytest . -v -s --tb=short --junitxml={REMOTE_XML}'
+        f'python3 -m pytest -m jpeg -v -s --tb=short --junitxml={REMOTE_XML}'
     )
     escaped = inner.replace("'", "'\"'\"'")
     return f"bash -lc '{escaped}'"
@@ -179,47 +186,37 @@ def count_results(xml_text):
 
 
 def test_run_remote_jpeg(board, board_ip):
-    print(f'\n使用板子 IP: {board_ip}', flush=True)
-    print(f'远端测试目录: {REMOTE_TEST_DIR}', flush=True)
+    print(f'BOARD_IP={board_ip}', flush=True)
+    print(f'TEST_WORKSPACE={JPEG_WORKSPACE}', flush=True)
+    print(f'REMOTE_TEST_DIR={REMOTE_TEST_DIR}', flush=True)
 
-    print('\n[网络] 通过 SSH 执行远端 pytest（实时输出）...', flush=True)
     started, out = run_remote_pytest_ssh(board_ip)
     if not started:
-        print(f'\n[网络] SSH 不可用，回退串口执行:\n{out[:500]}', flush=True)
         ok, out = run_remote_pytest_serial(board)
-        assert ok, f'串口执行远端 pytest 失败/超时\n{out}'
+        assert ok, f'remote pytest via serial failed\n{out}'
 
-    assert 'No module named pytest' not in out, (
-        f'远端缺少 pytest，请确认 test_prepare_athena2_env 已通过\n{out}'
+    assert 'No module named pytest' not in out, f'missing pytest\n{out}'
+    assert "No module named 'utils'" not in out and 'No module named "utils"' not in out, (
+        f'missing utils\n{out}'
     )
-    assert 'No module named \'utils\'' not in out and 'No module named "utils"' not in out, (
-        '远端缺少 utils 模块。请把仓库 pytest/utils 拷到板子 /data/utils '
-        f'(与 athena2_daily_test 同级)\n{out}'
-    )
-    assert 'ImportError while loading conftest' not in out, (
-        f'远端 conftest 加载失败，pytest 未真正跑起来，因此没有生成 {REMOTE_XML}\n{out}'
-    )
+    assert 'ImportError while loading conftest' not in out, f'conftest import error\n{out}'
+    assert "doesn't exist" not in out, f'missing jpeg test resources, check rsync/TEST_WORKSPACE\n{out}'
 
     xml_text, err = fetch_xml_via_scp(board_ip)
     if not xml_text:
-        print(f'\nscp 拉取失败，回退串口传输: {err}', flush=True)
         xml_text = fetch_xml_via_serial(board)
 
-    assert xml_text, (
-        f'无法获取远端测试报告 {REMOTE_XML}。'
-        f'通常是远端 pytest 未成功执行，或 scp/串口回传失败。scp错误: {err}'
-    )
-    assert xml_text.lstrip().startswith('<'), f'报告内容不是合法 XML:\n{xml_text[:200]}'
+    assert xml_text, f'failed to fetch {REMOTE_XML}: {err}'
+    assert xml_text.lstrip().startswith('<'), f'invalid xml:\n{xml_text[:200]}'
 
     local_path = os.path.abspath(LOCAL_XML)
     with open(local_path, 'w', encoding='utf-8') as f:
         f.write(xml_text)
-    print(f'\n远端报告已保存: {local_path}', flush=True)
 
     total, passed, failures, errors, skipped = count_results(xml_text)
     summary = (
-        f'远端 JPEG 测试: {passed} passed, {failures} failed, '
-        f'{errors} error, {skipped} skipped (共 {total})'
+        f'jpeg: {passed} passed, {failures} failed, '
+        f'{errors} error, {skipped} skipped (total {total})'
     )
     print(summary, flush=True)
 

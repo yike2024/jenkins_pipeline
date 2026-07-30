@@ -17,6 +17,9 @@ BOARD_PASS = os.environ.get('BOARD_PASS', 'linaro')
 BOARD_IP_FILE = os.path.join(os.path.dirname(__file__), '..', 'board_ip.txt')
 REMOTE_TEST_ROOT = '/data/athena2_daily_test'
 REMOTE_JPEG_DIR = f'{REMOTE_TEST_ROOT}/multimedia/jpeg'
+JPEG_WORKSPACE = '/data/jpeg_test_workspace'
+JPEG_RSYNC_SRC = 'dailytest@172.28.141.219:/home/dailytest/Athena2/Multimedia/jpeg/'
+JPEG_RSYNC_USER_PASS = 'dailytest'
 
 ANSI_RE = re.compile(
     r'\x1b\[[0-?]*[ -/]*[@-~]'

@@ -1,5 +1,11 @@
 import pytest
-from conftest import run_cmd, REMOTE_TEST_ROOT
+from conftest import (
+    run_cmd,
+    REMOTE_TEST_ROOT,
+    JPEG_WORKSPACE,
+    JPEG_RSYNC_SRC,
+    JPEG_RSYNC_USER_PASS,
+)
 
 TESTS = [
     ('系统信息', 'cat /etc/os-release', 'PRETTY_NAME', 5),
@@ -15,11 +21,11 @@ def test_board_cmd(board, name, cmd, expect, timeout):
 
 
 def test_board_ip(board_ip):
-    assert board_ip, '板子 IP 为空'
+    assert board_ip, 'BOARD_IP empty'
     print(f'BOARD_IP={board_ip}', flush=True)
 
 
-def test_prepare_athena2_env(board):
+def test_prepare_athena2_env(board, board_ip):
     ok, out = run_cmd(
         board,
         f'test -d {REMOTE_TEST_ROOT} && ls {REMOTE_TEST_ROOT}/requirements.txt && echo CHECK_DIR_OK',
@@ -28,7 +34,7 @@ def test_prepare_athena2_env(board):
         quiet=0.5,
         own_line=True,
     )
-    assert ok, f'板子上缺少测试目录或 requirements.txt: {REMOTE_TEST_ROOT}\n{out}'
+    assert ok, f'missing {REMOTE_TEST_ROOT} or requirements.txt\n{out}'
 
     ok, out = run_cmd(
         board,
@@ -38,10 +44,7 @@ def test_prepare_athena2_env(board):
         quiet=0.5,
         own_line=True,
     )
-    assert ok, (
-        '板子上缺少 /data/utils。请把仓库 pytest/utils 目录拷到 /data/utils '
-        f'(与 athena2_daily_test 同级)\n{out}'
-    )
+    assert ok, f'missing /data/utils\n{out}'
 
     ok, out = run_cmd(
         board,
@@ -51,7 +54,40 @@ def test_prepare_athena2_env(board):
         quiet=1,
         own_line=True,
     )
-    assert ok, f'pip install -r requirements.txt 超时或失败\n{out}'
+    assert ok, f'pip install failed\n{out}'
+
+    ok, out = run_cmd(
+        board,
+        'command -v rsync >/dev/null || (echo linaro | sudo -S -p "" apt-get update -qq && echo linaro | sudo -S -p "" apt-get install -y -qq rsync sshpass) ; echo RSYNC_READY',
+        'RSYNC_READY',
+        timeout=300,
+        quiet=1,
+        own_line=True,
+    )
+    assert ok, f'rsync/sshpass prepare failed\n{out}'
+
+    ok, out = run_cmd(
+        board,
+        f'mkdir -p {JPEG_WORKSPACE} && '
+        f'sshpass -p {JPEG_RSYNC_USER_PASS} rsync -arvcL '
+        f'-e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" '
+        f'{JPEG_RSYNC_SRC} {JPEG_WORKSPACE}/ ; echo JPEG_RSYNC_DONE',
+        'JPEG_RSYNC_DONE',
+        timeout=1800,
+        quiet=2,
+        own_line=True,
+    )
+    assert ok, f'jpeg rsync failed\n{out}'
+
+    ok, out = run_cmd(
+        board,
+        f'ls {JPEG_WORKSPACE}/opencvjpu >/dev/null && echo JPEG_DATA_OK',
+        'JPEG_DATA_OK',
+        timeout=10,
+        quiet=0.5,
+        own_line=True,
+    )
+    assert ok, f'jpeg workspace missing opencvjpu under {JPEG_WORKSPACE}\n{out}'
 
     ok, out = run_cmd(
         board,
@@ -61,5 +97,4 @@ def test_prepare_athena2_env(board):
         quiet=0.5,
         own_line=True,
     )
-    assert ok and 'No module named' not in out, f'安装后仍无法 import pytest/utils\n{out}'
-    print('\nathena2 环境准备完成', flush=True)
+    assert ok and 'No module named' not in out, f'import pytest/utils failed\n{out}'
